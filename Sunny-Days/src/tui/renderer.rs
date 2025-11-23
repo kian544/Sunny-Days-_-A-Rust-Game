@@ -1,73 +1,95 @@
 use crate::engine::world::World;
 use crate::map::tile::Tile;
 
-
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap, Clear},
     Frame,
 };
 
-const VIEW_W: i32 = 35;  // how wide the camera is (tiles)
-const VIEW_H: i32 = 20;  // how tall the camera is (tiles)
-
-fn compute_viewport(px: i32, py: i32, map_w: i32, map_h: i32, view_w: i32, view_h: i32) -> (i32, i32, i32, i32) {
-    // top-left corner if perfectly centered
+fn compute_viewport_origin(
+    px: i32,
+    py: i32,
+    map_w: i32,
+    map_h: i32,
+    view_w: i32,
+    view_h: i32,
+) -> (i32, i32) {
     let mut x0 = px - view_w / 2;
     let mut y0 = py - view_h / 2;
 
-    // clamp to left/top
     if x0 < 0 { x0 = 0; }
     if y0 < 0 { y0 = 0; }
 
-    // clamp to right/bottom
-    if x0 + view_w > map_w {
-        x0 = (map_w - view_w).max(0);
+    if view_w < map_w && x0 + view_w > map_w {
+        x0 = map_w - view_w;
     }
-    if y0 + view_h > map_h {
-        y0 = (map_h - view_h).max(0);
+    if view_h < map_h && y0 + view_h > map_h {
+        y0 = map_h - view_h;
     }
 
-    let x1 = (x0 + view_w).min(map_w);
-    let y1 = (y0 + view_h).min(map_h);
-
-    (x0, y0, x1, y1)
+    (x0, y0)
 }
-
 
 pub fn render(f: &mut Frame, world: &World) {
     let size = f.size();
+    f.render_widget(Clear, size);
+
+    if size.width < 20 || size.height < 10 {
+        let msg = Paragraph::new("Terminal too small — resize to play.")
+            .block(Block::default().borders(Borders::ALL).title("Sunny Days"))
+            .wrap(Wrap { trim: true });
+        f.render_widget(msg, size);
+        return;
+    }
+
+    let log_h = (size.height / 4).clamp(5, 10);
 
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(5),
-            Constraint::Length(7),
+            Constraint::Min(3),
+            Constraint::Length(log_h),
         ])
         .split(size);
 
     let top = vertical[0];
     let bottom = vertical[1];
 
-    let horizontal = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min(10),
-            Constraint::Length(26),
-        ])
-        .split(top);
+    let sidebar_w = (top.width / 3).clamp(20, 32);
 
-    let map_area = horizontal[0];
-    let sidebar_area = horizontal[1];
+    if top.width < sidebar_w + 25 {
+        let stacked = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(3),
+                Constraint::Length(8),
+            ])
+            .split(top);
 
-    draw_map(f, map_area, world);
-    draw_sidebar(f, sidebar_area, world);
+        draw_map(f, stacked[0], world);
+        draw_sidebar(f, stacked[1], world);
+    } else {
+        let horizontal = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(10),
+                Constraint::Length(sidebar_w),
+            ])
+            .split(top);
+
+        draw_map(f, horizontal[0], world);
+        draw_sidebar(f, horizontal[1], world);
+    }
+
     draw_logs(f, bottom, world);
 }
 
 fn draw_map(f: &mut Frame, area: Rect, world: &World) {
+    f.render_widget(Clear, area);
+
     let map = world.current_map();
     let px = world.player.x;
     let py = world.player.y;
@@ -75,35 +97,43 @@ fn draw_map(f: &mut Frame, area: Rect, world: &World) {
     let map_w = map.width as i32;
     let map_h = map.height as i32;
 
-    // Ratatui area size (in characters)
-    let area_w = area.width as i32;
-    let area_h = area.height as i32;
+    let inner_w = (area.width as i32).saturating_sub(2);
+    let inner_h = (area.height as i32).saturating_sub(2);
 
-    // Camera size = min of our desired zoom and screen space
-    let view_w = VIEW_W.min(area_w);
-    let view_h = VIEW_H.min(area_h);
+    let view_w = inner_w.max(1);
+    let view_h = inner_h.max(1);
 
-    let (x0, y0, x1, y1) = compute_viewport(px, py, map_w, map_h, view_w, view_h);
+    let (x0, y0) = compute_viewport_origin(px, py, map_w, map_h, view_w, view_h);
 
-    let mut lines: Vec<Line> = Vec::with_capacity((y1 - y0) as usize);
+    let mut lines: Vec<Line> = Vec::with_capacity(view_h as usize);
 
-    for wy in y0..y1 {
-        let mut spans: Vec<Span> = Vec::with_capacity((x1 - x0) as usize);
-        for wx in x0..x1 {
+    for vy in 0..view_h {
+        let wy = y0 + vy;
+        let mut spans: Vec<Span> = Vec::with_capacity(view_w as usize);
+
+        for vx in 0..view_w {
+            let wx = x0 + vx;
+
             if wx == px && wy == py {
                 spans.push(Span::styled("@", Style::default().fg(Color::Yellow)));
-            } else {
+                continue;
+            }
+
+            if wx < 0 || wy < 0 || wx >= map_w || wy >= map_h {
+                spans.push(Span::raw(" "));
+                continue;
+            }
+
             let tile = map.get(wx as usize, wy as usize);
             let (ch, style) = match tile {
                 Tile::Wall => ("#", Style::default().fg(Color::DarkGray)),
                 Tile::Floor => (" ", Style::default()),
-                Tile::DoorForward => ("+", Style::default().fg(Color::White)), // white door
-                Tile::DoorBack => ("+", Style::default().fg(Color::White)),    // return door
+                Tile::Door => ("+", Style::default().fg(Color::White)), // single door
             };
 
-                spans.push(Span::styled(ch, style));
-            }
+            spans.push(Span::styled(ch, style));
         }
+
         lines.push(Line::from(spans));
     }
 
@@ -114,9 +144,12 @@ fn draw_map(f: &mut Frame, area: Rect, world: &World) {
     f.render_widget(map_widget, area);
 }
 
-
 fn draw_sidebar(f: &mut Frame, area: Rect, world: &World) {
+    f.render_widget(Clear, area);
+
     let p = &world.player;
+
+    let room_label = if world.current == 0 { "Room 1" } else { "Room 2" };
 
     let text = vec![
         Line::from(vec![
@@ -124,11 +157,13 @@ fn draw_sidebar(f: &mut Frame, area: Rect, world: &World) {
             Span::styled(format!("{}/{}", p.hp, p.hp), Style::default().fg(Color::Green)),
         ]),
         Line::from(format!("Pos: ({}, {})", p.x, p.y)),
+        Line::from(format!("Room: {}", room_label)),
         Line::from(format!("Seed: {}", world.seed)),
         Line::from(""),
         Line::from(Span::styled("Controls", Style::default().fg(Color::Cyan))),
         Line::from("WASD / Arrows: Move"),
         Line::from("Q: Quit"),
+        Line::from("Step on + to switch rooms"),
     ];
 
     let sidebar = Paragraph::new(text)
@@ -139,6 +174,8 @@ fn draw_sidebar(f: &mut Frame, area: Rect, world: &World) {
 }
 
 fn draw_logs(f: &mut Frame, area: Rect, world: &World) {
+    f.render_widget(Clear, area);
+
     let mut lines: Vec<Line> = Vec::new();
     for msg in world.logs.iter() {
         lines.push(Line::from(msg.clone()));

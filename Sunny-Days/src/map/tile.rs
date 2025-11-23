@@ -2,6 +2,5 @@
 pub enum Tile {
     Wall,
     Floor,
-    DoorForward, // leads to a new map
-    DoorBack,    // leads to previous map
+    Door, // single door used to toggle between Room 1 and Room 2
 }
