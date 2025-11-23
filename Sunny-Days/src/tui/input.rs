@@ -1,7 +1,8 @@
 use crate::engine::action::Action;
 use crossterm::event::{self, Event, KeyCode};
 
-pub fn read_action() -> crossterm::Result<Action> {
+pub fn read_action() -> std::io::Result<Action> {
+
     if let Event::Key(key) = event::read()? {
         let act = match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => Action::Quit,

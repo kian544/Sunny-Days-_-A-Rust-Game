@@ -4,6 +4,7 @@ mod tui;
 
 use engine::game_loop::run;
 
-fn main() -> crossterm::Result<()> {
+fn main() -> std::io::Result<()> {
     run()
 }
+

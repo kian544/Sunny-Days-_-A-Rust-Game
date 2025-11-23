@@ -12,7 +12,8 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 
 use std::{io, time::Duration};
 
-pub fn run() -> crossterm::Result<()> {
+pub fn run() -> std::io::Result<()> {
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
