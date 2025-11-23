@@ -9,6 +9,33 @@ use ratatui::{
     Frame,
 };
 
+const VIEW_W: i32 = 35;  // how wide the camera is (tiles)
+const VIEW_H: i32 = 20;  // how tall the camera is (tiles)
+
+fn compute_viewport(px: i32, py: i32, map_w: i32, map_h: i32, view_w: i32, view_h: i32) -> (i32, i32, i32, i32) {
+    // top-left corner if perfectly centered
+    let mut x0 = px - view_w / 2;
+    let mut y0 = py - view_h / 2;
+
+    // clamp to left/top
+    if x0 < 0 { x0 = 0; }
+    if y0 < 0 { y0 = 0; }
+
+    // clamp to right/bottom
+    if x0 + view_w > map_w {
+        x0 = (map_w - view_w).max(0);
+    }
+    if y0 + view_h > map_h {
+        y0 = (map_h - view_h).max(0);
+    }
+
+    let x1 = (x0 + view_w).min(map_w);
+    let y1 = (y0 + view_h).min(map_h);
+
+    (x0, y0, x1, y1)
+}
+
+
 pub fn render(f: &mut Frame, world: &World) {
     let size = f.size();
 
@@ -44,18 +71,31 @@ fn draw_map(f: &mut Frame, area: Rect, world: &World) {
     let px = world.player.x;
     let py = world.player.y;
 
-    let mut lines: Vec<Line> = Vec::with_capacity(map.height);
+    let map_w = map.width as i32;
+    let map_h = map.height as i32;
 
-    for y in 0..map.height {
-        let mut spans: Vec<Span> = Vec::with_capacity(map.width);
-        for x in 0..map.width {
-            if x as i32 == px && y as i32 == py {
+    // Ratatui area size (in characters)
+    let area_w = area.width as i32;
+    let area_h = area.height as i32;
+
+    // Camera size = min of our desired zoom and screen space
+    let view_w = VIEW_W.min(area_w);
+    let view_h = VIEW_H.min(area_h);
+
+    let (x0, y0, x1, y1) = compute_viewport(px, py, map_w, map_h, view_w, view_h);
+
+    let mut lines: Vec<Line> = Vec::with_capacity((y1 - y0) as usize);
+
+    for wy in y0..y1 {
+        let mut spans: Vec<Span> = Vec::with_capacity((x1 - x0) as usize);
+        for wx in x0..x1 {
+            if wx == px && wy == py {
                 spans.push(Span::styled("@", Style::default().fg(Color::Yellow)));
             } else {
-                let tile = map.get(x, y);
+                let tile = map.get(wx as usize, wy as usize);
                 let (ch, style) = match tile {
                     Tile::Wall => ("#", Style::default().fg(Color::DarkGray)),
-                    Tile::Floor => (".", Style::default().fg(Color::Gray)),
+                    Tile::Floor => (" ", Style::default()), // blank floors (your previous change)
                 };
                 spans.push(Span::styled(ch, style));
             }
@@ -69,6 +109,7 @@ fn draw_map(f: &mut Frame, area: Rect, world: &World) {
 
     f.render_widget(map_widget, area);
 }
+
 
 fn draw_sidebar(f: &mut Frame, area: Rect, world: &World) {
     let p = &world.player;

@@ -1,9 +1,14 @@
 use crate::engine::action::Action;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+
 
 pub fn read_action() -> std::io::Result<Action> {
-
     if let Event::Key(key) = event::read()? {
+        // Only handle actual key presses, ignore repeats/releases
+        if key.kind != KeyEventKind::Press {
+            return Ok(Action::None);
+        }
+
         let act = match key.code {
             KeyCode::Char('q') | KeyCode::Char('Q') => Action::Quit,
 
@@ -19,3 +24,4 @@ pub fn read_action() -> std::io::Result<Action> {
         Ok(Action::None)
     }
 }
+
