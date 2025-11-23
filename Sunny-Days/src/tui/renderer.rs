@@ -1,6 +1,7 @@
 use crate::engine::world::World;
 use crate::map::tile::Tile;
 
+
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
@@ -67,7 +68,7 @@ pub fn render(f: &mut Frame, world: &World) {
 }
 
 fn draw_map(f: &mut Frame, area: Rect, world: &World) {
-    let map = &world.map;
+    let map = world.current_map();
     let px = world.player.x;
     let py = world.player.y;
 
@@ -92,11 +93,14 @@ fn draw_map(f: &mut Frame, area: Rect, world: &World) {
             if wx == px && wy == py {
                 spans.push(Span::styled("@", Style::default().fg(Color::Yellow)));
             } else {
-                let tile = map.get(wx as usize, wy as usize);
-                let (ch, style) = match tile {
-                    Tile::Wall => ("#", Style::default().fg(Color::DarkGray)),
-                    Tile::Floor => (" ", Style::default()), // blank floors (your previous change)
-                };
+            let tile = map.get(wx as usize, wy as usize);
+            let (ch, style) = match tile {
+                Tile::Wall => ("#", Style::default().fg(Color::DarkGray)),
+                Tile::Floor => (" ", Style::default()),
+                Tile::DoorForward => ("+", Style::default().fg(Color::White)), // white door
+                Tile::DoorBack => ("+", Style::default().fg(Color::White)),    // return door
+            };
+
                 spans.push(Span::styled(ch, style));
             }
         }

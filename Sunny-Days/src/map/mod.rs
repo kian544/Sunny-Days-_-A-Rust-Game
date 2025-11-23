@@ -42,4 +42,11 @@ impl Map {
         }
         None
     }
+    pub fn is_walkable(&self, x: usize, y: usize) -> bool {
+        matches!(
+            self.get(x, y),
+            Tile::Floor | Tile::DoorForward | Tile::DoorBack
+        )
+    }
+
 }

@@ -1,4 +1,3 @@
-use crate::map::tile::Tile;
 use crate::map::Map;
 
 #[derive(Debug, Clone, Copy)]
@@ -21,9 +20,10 @@ impl Player {
             return;
         }
 
-        if map.get(nx as usize, ny as usize) == Tile::Floor {
+        if map.is_walkable(nx as usize, ny as usize) {
             self.x = nx;
             self.y = ny;
         }
+
     }
 }
