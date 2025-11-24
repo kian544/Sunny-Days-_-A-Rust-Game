@@ -32,6 +32,10 @@ impl Map {
         self.tiles[i] = t;
     }
 
+    pub fn in_bounds(&self, x: i32, y: i32) -> bool {
+        x >= 0 && y >= 0 && (x as usize) < self.width && (y as usize) < self.height
+    }
+
     pub fn find_first_floor(&self) -> Option<(usize, usize)> {
         for y in 0..self.height {
             for x in 0..self.width {
@@ -44,6 +48,6 @@ impl Map {
     }
 
     pub fn is_walkable(&self, x: usize, y: usize) -> bool {
-        matches!(self.get(x, y), Tile::Floor | Tile::Door)
+        matches!(self.get(x, y), Tile::Floor | Tile::Door | Tile::Chest)
     }
 }

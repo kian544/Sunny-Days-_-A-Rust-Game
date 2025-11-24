@@ -34,6 +34,10 @@ fn compute_viewport_origin(
     (x0, y0)
 }
 
+fn fmt_bonus(v: i32) -> String {
+    if v >= 0 { format!("+{}", v) } else { format!("{}", v) }
+}
+
 pub fn render(f: &mut Frame, world: &World) {
     let size = f.size();
     f.render_widget(Clear, size);
@@ -191,6 +195,10 @@ fn draw_map(f: &mut Frame, area: Rect, world: &World) {
                 let style = match npc.id {
                     NpcId::MayorSol => Style::default().fg(Color::Cyan),
                     NpcId::Noor => Style::default().fg(Color::Magenta),
+                    NpcId::Lamp => Style::default().fg(Color::Yellow),
+                    NpcId::Random1 | NpcId::Random2 | NpcId::Random3 => {
+                        Style::default().fg(Color::Yellow)
+                    }
                 };
                 spans.push(Span::styled(
                     npc.symbol.to_string(),
@@ -209,6 +217,7 @@ fn draw_map(f: &mut Frame, area: Rect, world: &World) {
                 Tile::Wall => ("#", Style::default().fg(Color::DarkGray)),
                 Tile::Floor => (" ", Style::default()),
                 Tile::Door => ("+", Style::default().fg(Color::White)),
+                Tile::Chest => ("C", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
             };
 
             spans.push(Span::styled(ch, style));
@@ -228,9 +237,7 @@ fn tab_label(tab: InvTab, active: InvTab, title: &str) -> Span<'static> {
     if tab == active {
         Span::styled(
             format!("[{}]", title),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         )
     } else {
         Span::styled(
@@ -269,7 +276,6 @@ fn draw_sidebar(f: &mut Frame, area: Rect, world: &World) {
             Style::default().fg(Color::Cyan),
         )));
 
-        // Tab row
         text.push(Line::from(vec![
             tab_label(InvTab::Weapons, inv.tab, "Weapons"),
             Span::raw(" "),
@@ -279,7 +285,6 @@ fn draw_sidebar(f: &mut Frame, area: Rect, world: &World) {
         ]));
         text.push(Line::from(""));
 
-        // ---- Weapons ----
         text.push(Line::from(Span::styled(
             "Weapons",
             Style::default().fg(Color::White),
@@ -299,8 +304,12 @@ fn draw_sidebar(f: &mut Frame, area: Rect, world: &World) {
                     && matches!(inv.selection(), InvSelection::SwordSlot)
                 {
                     format!(
-                        "{} Sword : {} (+{} ATK, +{} DEF, +{} SPD) [Space to unequip]",
-                        sword_marker, sw.name, sw.atk_bonus, sw.def_bonus, sw.speed_bonus
+                        "{} Sword : {} ({} ATK, {} DEF, {} SPD) [Space to unequip]",
+                        sword_marker,
+                        sw.name,
+                        fmt_bonus(sw.atk_bonus),
+                        fmt_bonus(sw.def_bonus),
+                        fmt_bonus(sw.speed_bonus),
                     )
                 } else {
                     format!("{} Sword : {}", sword_marker, sw.name)
@@ -324,8 +333,12 @@ fn draw_sidebar(f: &mut Frame, area: Rect, world: &World) {
                     && matches!(inv.selection(), InvSelection::ShieldSlot)
                 {
                     format!(
-                        "{} Shield: {} (+{} ATK, +{} DEF, +{} SPD) [Space to unequip]",
-                        shield_marker, sh.name, sh.atk_bonus, sh.def_bonus, sh.speed_bonus
+                        "{} Shield: {} ({} ATK, {} DEF, {} SPD) [Space to unequip]",
+                        shield_marker,
+                        sh.name,
+                        fmt_bonus(sh.atk_bonus),
+                        fmt_bonus(sh.def_bonus),
+                        fmt_bonus(sh.speed_bonus),
                     )
                 } else {
                     format!("{} Shield: {}", shield_marker, sh.name)
@@ -337,7 +350,6 @@ fn draw_sidebar(f: &mut Frame, area: Rect, world: &World) {
 
         text.push(Line::from(""));
 
-        // ---- Consumables ----
         text.push(Line::from(Span::styled(
             "Consumables (Space to use)",
             Style::default().fg(Color::White),
@@ -364,7 +376,6 @@ fn draw_sidebar(f: &mut Frame, area: Rect, world: &World) {
 
         text.push(Line::from(""));
 
-        // ---- Backpack ----
         text.push(Line::from(Span::styled(
             "Backpack (Space to equip)",
             Style::default().fg(Color::White),
@@ -398,7 +409,7 @@ fn draw_sidebar(f: &mut Frame, area: Rect, world: &World) {
             Style::default().fg(Color::Cyan),
         )));
         text.push(Line::from("WASD / Arrows: Move"));
-        text.push(Line::from("E: Talk"));
+        text.push(Line::from("E: Talk / Open chest"));
         text.push(Line::from("I: Inventory"));
         text.push(Line::from("T: Inventory Tab"));
         text.push(Line::from("Q: Stats"));
@@ -451,9 +462,7 @@ fn draw_stats(f: &mut Frame, area: Rect, world: &World) {
         Line::from(""),
         Line::from(Span::styled(
             "Press Q or Esc to close.",
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::ITALIC),
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
         )),
     ];
 
@@ -485,9 +494,7 @@ fn draw_dialogue(f: &mut Frame, area: Rect, world: &World) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         footer,
-        Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::ITALIC),
+        Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
     )));
 
     let dialog = Paragraph::new(lines)

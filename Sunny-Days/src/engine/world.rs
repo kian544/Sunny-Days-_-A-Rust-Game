@@ -1,5 +1,7 @@
 use crate::engine::action::Action;
-use crate::engine::entity::{Equipment, Player, InvSelection, InvTab, EquipSlot};
+use crate::engine::entity::{
+    Equipment, Player, InvSelection, InvTab, Consumable, EquipSlot as Slot,
+};
 use crate::map::{generator::generate_rooms_and_corridors, tile::Tile, Map};
 
 use rand::{Rng, SeedableRng};
@@ -8,12 +10,21 @@ use rand::rngs::StdRng;
 use std::collections::VecDeque;
 
 #[derive(Clone)]
+pub struct Chest {
+    pub x: i32,
+    pub y: i32,
+    pub item: Option<Consumable>,
+    pub opened: bool,
+}
+
+#[derive(Clone)]
 pub struct Level {
     pub map: Map,
     pub door: (i32, i32),
+    pub chests: Vec<Chest>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GameState {
     Title,
     Intro,
@@ -25,6 +36,10 @@ pub enum GameState {
 pub enum NpcId {
     MayorSol,
     Noor,
+    Lamp,
+    Random1,
+    Random2,
+    Random3,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +56,12 @@ pub struct Npc {
 pub enum AwaitingChoice {
     YesNoMayor,
     ABNoorWeapon,
+    Chest {
+        room: usize,
+        x: i32,
+        y: i32,
+        item: Option<Consumable>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -69,11 +90,14 @@ pub struct World {
     pub npcs: Vec<Npc>,
     mayor_done: bool,
     noor_done: bool,
+    lamp_done: bool,
 
     pub dialogue: Option<DialogueSession>,
 }
 
 impl World {
+    const NPC_MIN_SEP: i32 = 5;
+
     pub fn new(seed: u64, width: usize, height: usize) -> Self {
         let (level0, spawn0) = Self::make_level(seed, 0, width, height);
         let (level1, _spawn1) = Self::make_level(seed, 1, width, height);
@@ -82,7 +106,7 @@ impl World {
         logs.push_back(format!("Seed: {}", seed));
         logs.push_back("Welcome to Sunny Day(s).".to_string());
         logs.push_back("Move with WASD or arrow keys.".to_string());
-        logs.push_back("Press E to talk to NPCs.".to_string());
+        logs.push_back("Press E to talk to NPCs / open chests.".to_string());
         logs.push_back("Press I to open inventory.".to_string());
         logs.push_back("Press T to toggle inventory tabs.".to_string());
         logs.push_back("Press Q to open stats.".to_string());
@@ -99,15 +123,21 @@ impl World {
             levels: vec![level0, level1],
             current: 0,
             player: Player::new(spawn0.0, spawn0.1),
+
             logs,
             seed,
+
             inventory_open: false,
             stats_open: false,
             state: GameState::Title,
+
             intro_lines,
+
             npcs: Vec::new(),
             mayor_done: false,
             noor_done: false,
+            lamp_done: false,
+
             dialogue: None,
         };
 
@@ -115,7 +145,48 @@ impl World {
         world
     }
 
+    // helper to avoid "+-2" formatting in logs
+    fn fmt_hp_delta(delta: i32) -> String {
+        if delta >= 0 {
+            format!("+{} HP", delta)
+        } else {
+            format!("{} HP", delta)
+        }
+    }
+
+    // ✅ NEW: only returns a floor tile that is >= min_dist away from all taken positions.
+    // Uses Chebyshev distance (max of dx/dy), which feels best on grid movement.
+    fn random_floor_spaced(&self, room: usize, taken: &[(i32, i32)], min_dist: i32) -> (i32, i32) {
+        let map = &self.levels[room].map;
+        let mut floors = Vec::new();
+
+        for y in 0..map.height {
+            for x in 0..map.width {
+                if map.get(x, y) == Tile::Floor {
+                    let p = (x as i32, y as i32);
+                    let ok = taken.iter().all(|&(tx, ty)| {
+                        (tx - p.0).abs().max((ty - p.1).abs()) >= min_dist
+                    });
+                    if ok {
+                        floors.push(p);
+                    }
+                }
+            }
+        }
+
+        // Fallback if spacing is too strict for a tiny map
+        if floors.is_empty() {
+            return self.random_floor_excluding(room, taken);
+        }
+
+        let mut rng = StdRng::seed_from_u64(
+            self.seed ^ 0xBEEFu64 ^ (taken.len() as u64 * 31)
+        );
+        floors[rng.gen_range(0..floors.len())]
+    }
+
     fn spawn_npcs(&mut self, spawn0: (i32, i32)) {
+        // Mayor Sol fixed 5 blocks from spawn
         let mut mx = spawn0.0 + 5;
         let mut my = spawn0.1;
 
@@ -129,7 +200,8 @@ impl World {
             ];
             for (cx, cy) in candidates {
                 if self.is_floor(0, cx, cy) {
-                    mx = cx; my = cy;
+                    mx = cx;
+                    my = cy;
                     break;
                 }
             }
@@ -144,7 +216,21 @@ impl World {
             symbol: 'M',
         });
 
-        let (nx, ny) = self.random_floor_excluding(0, &[(spawn0.0, spawn0.1), (mx, my)]);
+        // ✅ NEW: taken list for spacing
+        let mut taken: Vec<(i32, i32)> = vec![
+            (spawn0.0, spawn0.1),
+            (mx, my),
+            self.levels[0].door,
+        ];
+
+        // also keep NPCs away from chests so it doesn't look cluttered
+        for ch in &self.levels[0].chests {
+            taken.push((ch.x, ch.y));
+        }
+
+        // Noor spaced in Room 1
+        let (nx, ny) = self.random_floor_spaced(0, &taken, Self::NPC_MIN_SEP);
+        taken.push((nx, ny));
         self.npcs.push(Npc {
             id: NpcId::Noor,
             name: "Noor".to_string(),
@@ -153,6 +239,32 @@ impl World {
             y: ny,
             symbol: 'N',
         });
+
+        // Lamp spaced in Room 1
+        let (lx, ly) = self.random_floor_spaced(0, &taken, Self::NPC_MIN_SEP);
+        taken.push((lx, ly));
+        self.npcs.push(Npc {
+            id: NpcId::Lamp,
+            name: "Lamp".to_string(),
+            room: 0,
+            x: lx,
+            y: ly,
+            symbol: 'L',
+        });
+
+        // 3 random villagers (yellow circles), spaced placement Room 1
+        for id in [NpcId::Random1, NpcId::Random2, NpcId::Random3] {
+            let (vx, vy) = self.random_floor_spaced(0, &taken, Self::NPC_MIN_SEP);
+            taken.push((vx, vy));
+            self.npcs.push(Npc {
+                id,
+                name: "Villager".to_string(),
+                room: 0,
+                x: vx,
+                y: vy,
+                symbol: '●',
+            });
+        }
     }
 
     fn is_floor(&self, room: usize, x: i32, y: i32) -> bool {
@@ -188,6 +300,10 @@ impl World {
         &self.levels[self.current]
     }
 
+    fn current_level_mut(&mut self) -> &mut Level {
+        &mut self.levels[self.current]
+    }
+
     pub fn current_map(&self) -> &Map {
         &self.current_level().map
     }
@@ -200,12 +316,16 @@ impl World {
         let px = self.player.x;
         let py = self.player.y;
         self.npcs.iter().find(|n| {
-            n.room == self.current &&
-            (n.x - px).abs().max((n.y - py).abs()) <= 1
+            n.room == self.current && (n.x - px).abs().max((n.y - py).abs()) <= 1
         })
     }
 
-    fn make_level(base_seed: u64, depth: usize, width: usize, height: usize) -> (Level, (i32, i32)) {
+    fn make_level(
+        base_seed: u64,
+        depth: usize,
+        width: usize,
+        height: usize,
+    ) -> (Level, (i32, i32)) {
         let seed = base_seed.wrapping_add(depth as u64 * 9_973);
         let mut map = generate_rooms_and_corridors(width, height, seed);
 
@@ -214,7 +334,12 @@ impl World {
 
         let door = Self::place_random_door(&mut map, seed ^ 0xD00D, spawn);
 
-        (Level { map, door }, spawn)
+        let mut chests = Vec::new();
+        if depth == 0 {
+            chests = Self::scatter_chests(&mut map, seed ^ 0xC1E57, spawn, door);
+        }
+
+        (Level { map, door, chests }, spawn)
     }
 
     fn place_random_door(map: &mut Map, seed: u64, exclude: (i32, i32)) -> (i32, i32) {
@@ -243,6 +368,79 @@ impl World {
 
         map.set(door.0 as usize, door.1 as usize, Tile::Door);
         door
+    }
+
+    fn random_consumable(rng: &mut StdRng) -> Consumable {
+        match rng.gen_range(0..4) {
+            0 => Consumable {
+                name: "Fiery ale".to_string(),
+                heal: 2,
+                atk_bonus: 2,
+                def_bonus: 0,
+            },
+            1 => Consumable {
+                name: "Weeping Willow bark".to_string(),
+                heal: 3,
+                atk_bonus: 0,
+                def_bonus: 0,
+            },
+            2 => Consumable {
+                name: "Sunny Jerky".to_string(),
+                heal: 5,
+                atk_bonus: 0,
+                def_bonus: 0,
+            },
+            _ => Consumable {
+                name: "Frozen tears".to_string(),
+                heal: -2,
+                atk_bonus: 0,
+                def_bonus: 5,
+            },
+        }
+    }
+
+    fn scatter_chests(
+        map: &mut Map,
+        seed: u64,
+        spawn: (i32, i32),
+        door: (i32, i32),
+    ) -> Vec<Chest> {
+        let mut floors = Vec::new();
+        for y in 0..map.height {
+            for x in 0..map.width {
+                if map.get(x, y) == Tile::Floor {
+                    floors.push((x as i32, y as i32));
+                }
+            }
+        }
+
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut chests = Vec::new();
+
+        let mut exclude = vec![spawn, door];
+        let count = 3usize.min(floors.len());
+        for _ in 0..count {
+            let mut pos = spawn;
+            for _tries in 0..200 {
+                let candidate = floors[rng.gen_range(0..floors.len())];
+                if !exclude.contains(&candidate) {
+                    pos = candidate;
+                    break;
+                }
+            }
+
+            exclude.push(pos);
+            map.set(pos.0 as usize, pos.1 as usize, Tile::Chest);
+            let item = Some(Self::random_consumable(&mut rng));
+            chests.push(Chest {
+                x: pos.0,
+                y: pos.1,
+                item,
+                opened: false,
+            });
+        }
+
+        chests
     }
 
     pub fn push_log(&mut self, msg: impl Into<String>) {
@@ -304,7 +502,6 @@ impl World {
         }
     }
 
-    // ✅ FIXED: no long-lived &mut borrow while logging
     fn use_or_unequip_or_equip(&mut self) {
         let selection = self.player.inventory.selection();
         let mut log_msg: Option<String> = None;
@@ -336,7 +533,11 @@ impl World {
                     let before = self.player.hp;
                     self.player.hp = (self.player.hp + item.heal).min(self.player.max_hp);
                     let healed = self.player.hp - before;
-                    log_msg = Some(format!("Used {} (+{} HP).", item.name, healed));
+                    log_msg = Some(format!(
+                        "Used {} ({}).",
+                        item.name,
+                        Self::fmt_hp_delta(healed)
+                    ));
                 } else {
                     log_msg = Some("No consumables to use.".to_string());
                 }
@@ -354,14 +555,14 @@ impl World {
 
                 if let Some(eq) = eq_opt {
                     match eq.slot {
-                        EquipSlot::Sword => {
+                        Slot::Sword => {
                             if let Some(old) = self.player.inventory.sword.take() {
                                 self.player.inventory.backpack.push(old);
                             }
                             self.player.inventory.sword = Some(eq.clone());
                             log_msg = Some(format!("Equipped sword: {}.", eq.name));
                         }
-                        EquipSlot::Shield => {
+                        Slot::Shield => {
                             if let Some(old) = self.player.inventory.shield.take() {
                                 self.player.inventory.backpack.push(old);
                             }
@@ -370,7 +571,6 @@ impl World {
                         }
                     }
 
-                    // clamp backpack cursor after removal
                     let inv = &mut self.player.inventory;
                     if inv.backpack.is_empty() {
                         inv.backpack_cursor = 0;
@@ -389,6 +589,45 @@ impl World {
 
         if let Some(m) = log_msg {
             self.push_log(m);
+        }
+    }
+
+    fn start_chest_dialogue(&mut self, room: usize, x: i32, y: i32, item: Option<Consumable>) {
+        let name = item
+            .as_ref()
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "nothing".to_string());
+
+        let pages = vec![format!(
+            "You found a treasure chest!\nInside is: {}\n\n(A) Put in inventory\n(B) Use now\n(C) Throw away",
+            name
+        )];
+
+        self.dialogue = Some(DialogueSession {
+            npc: NpcId::MayorSol,
+            title: "Treasure Chest".to_string(),
+            pages,
+            page_index: 0,
+            awaiting: Some(AwaitingChoice::Chest { room, x, y, item }),
+        });
+        self.state = GameState::Dialogue;
+    }
+
+    fn open_chest_if_on_one(&mut self) {
+        let room = self.current;
+        let px = self.player.x;
+        let py = self.player.y;
+
+        let level = &mut self.levels[room];
+        if let Some(chest) = level
+            .chests
+            .iter_mut()
+            .find(|c| !c.opened && c.x == px && c.y == py)
+        {
+            chest.opened = true;
+            level.map.set(px as usize, py as usize, Tile::Floor);
+            let item = chest.item.take();
+            self.start_chest_dialogue(room, px, py, item);
         }
     }
 
@@ -425,7 +664,7 @@ impl World {
                         npc: npc.id,
                         title: npc.name.clone(),
                         pages: vec![
-                            "Good luck out there. Don’t let Sol boss you around too much.".to_string()
+                            "Scram! Go to Lamp and get whatever you’re missing!!".to_string()
                         ],
                         page_index: 0,
                         awaiting: None,
@@ -437,13 +676,92 @@ impl World {
                         pages: vec![
                             "Hey there partner!".to_string(),
                             "What’s that, the Mayor sent you here? Damn Sol, always ruining my day. What! No not you, you seem okay… ish. So you’re gonna go and fight the Weeping ay? Well you’ll need a weapon. Grab one: (A) Basic Sword  (B) Basic Shield".to_string(),
-                            "Good choice! Now scram!".to_string(),
+                            "Good choice! Now I’ll keep the other one to be fair, if you want your second choice, go see Lamp!".to_string(),
                         ],
                         page_index: 0,
                         awaiting: Some(AwaitingChoice::ABNoorWeapon),
                     }
                 }
             }
+
+            NpcId::Lamp => {
+                if !self.noor_done {
+                    DialogueSession {
+                        npc: npc.id,
+                        title: npc.name.clone(),
+                        pages: vec![
+                            "Hey aren’t you supposed to talk to Noor first?".to_string()
+                        ],
+                        page_index: 0,
+                        awaiting: None,
+                    }
+                } else if self.lamp_done {
+                    DialogueSession {
+                        npc: npc.id,
+                        title: npc.name.clone(),
+                        pages: vec![
+                            "Well good luck, if you’re fighting the Weeping, you’ll need it!".to_string()
+                        ],
+                        page_index: 0,
+                        awaiting: None,
+                    }
+                } else {
+                    let missing_sword = self.player.inventory.sword.is_none();
+                    let missing_shield = self.player.inventory.shield.is_none();
+
+                    let missing_label = if missing_sword {
+                        "Sword"
+                    } else if missing_shield {
+                        "Shield"
+                    } else {
+                        "nothing"
+                    };
+
+                    DialogueSession {
+                        npc: npc.id,
+                        title: npc.name.clone(),
+                        pages: vec![
+                            format!(
+                                "Hey! Did Noor send you? Yeah, they’re a bit rough around the edges. So you’re missing a {}, well take this!",
+                                missing_label
+                            ),
+                            format!("You got the {}.", missing_label),
+                        ],
+                        page_index: 0,
+                        awaiting: None,
+                    }
+                }
+            }
+
+            NpcId::Random1 => DialogueSession {
+                npc: npc.id,
+                title: npc.name.clone(),
+                pages: vec![
+                    "Isn’t it bad? So gloomy, so dark, I need some vitamin D pills or something!".to_string()
+                ],
+                page_index: 0,
+                awaiting: None,
+            },
+
+            NpcId::Random2 => DialogueSession {
+                npc: npc.id,
+                title: npc.name.clone(),
+                pages: vec![
+                    "I actually overheard the Mayor talking to himself, I think he’s going a bit cukoo!!".to_string()
+                ],
+                page_index: 0,
+                awaiting: None,
+            },
+
+            NpcId::Random3 => DialogueSession {
+                npc: npc.id,
+                title: npc.name.clone(),
+                pages: vec![
+                    "Oh please, if you think the Weeping are bad, wait until you hear from the IRS!".to_string()
+                ],
+                page_index: 0,
+                awaiting: None,
+            },
         };
 
         self.dialogue = Some(session);
@@ -455,62 +773,102 @@ impl World {
             if d.page_index + 1 < d.pages.len() {
                 d.page_index += 1;
             } else {
-                if d.awaiting.is_none() {
-                    self.dialogue = None;
-                    self.state = GameState::Playing;
-                }
+                self.dialogue = None;
+                self.state = GameState::Playing;
             }
         }
     }
 
     fn dialogue_choice(&mut self, c: char) {
-        let Some(d) = &mut self.dialogue else { return; };
+        let awaiting = self.dialogue.as_ref().and_then(|d| d.awaiting.clone());
+        let up = c.to_ascii_uppercase();
 
-        match d.awaiting {
+        match awaiting {
             Some(AwaitingChoice::YesNoMayor) => {
-                let up = c.to_ascii_uppercase();
-                if up == 'Y' {
+                if up == 'Y' || up == 'N' {
+                    let yes = up == 'Y';
                     self.mayor_done = true;
-                    d.awaiting = None;
-                    d.pages = vec![
-                        "Why thank you! Now go talk to Noor to get you started.".to_string()
-                    ];
-                    d.page_index = 0;
-                } else if up == 'N' {
-                    self.mayor_done = true;
-                    d.awaiting = None;
-                    d.pages = vec![
-                        "Aren’t you rude, I’ve been nothing but kind. Fine, go to Noor to get you started I guess…".to_string()
-                    ];
-                    d.page_index = 0;
+                    if let Some(d) = &mut self.dialogue {
+                        d.awaiting = None;
+                        d.pages = vec![if yes {
+                            "Why thank you! Now go talk to Noor to get you started.".to_string()
+                        } else {
+                            "Aren’t you rude, I’ve been nothing but kind. Fine, go to Noor to get you started I guess…".to_string()
+                        }];
+                        d.page_index = 0;
+                    }
                 }
             }
 
             Some(AwaitingChoice::ABNoorWeapon) => {
-                let up = c.to_ascii_uppercase();
-                if up == 'A' {
-                    self.player.equip_sword(Equipment {
-                        name: "Basic Sword".to_string(),
-                        slot: EquipSlot::Sword,
-                        atk_bonus: 3,
-                        def_bonus: 0,
-                        speed_bonus: 3,
-                    });
+                if up == 'A' || up == 'B' {
+                    if up == 'A' {
+                        self.player.equip_sword(Equipment {
+                            name: "Basic Sword".to_string(),
+                            slot: Slot::Sword,
+                            atk_bonus: 3,
+                            def_bonus: 0,
+                            speed_bonus: 3,
+                        });
+                    } else {
+                        self.player.equip_shield(Equipment {
+                            name: "Basic Shield".to_string(),
+                            slot: Slot::Shield,
+                            atk_bonus: 0,
+                            def_bonus: 3,
+                            speed_bonus: -2,
+                        });
+                    }
                     self.noor_done = true;
-                    d.awaiting = None;
-                    d.page_index = 2;
-                } else if up == 'B' {
-                    self.player.equip_shield(Equipment {
-                        name: "Basic Shield".to_string(),
-                        slot: EquipSlot::Shield,
-                        atk_bonus: 0,
-                        def_bonus: 3,
-                        speed_bonus: -2,
-                    });
-                    self.noor_done = true;
-                    d.awaiting = None;
-                    d.page_index = 2;
+                    if let Some(d) = &mut self.dialogue {
+                        d.awaiting = None;
+                        d.page_index = 2;
+                    }
                 }
+            }
+
+            Some(AwaitingChoice::Chest { item, .. }) => {
+                let mut log: Option<String> = None;
+
+                match up {
+                    'A' => {
+                        if let Some(cons) = item {
+                            if self.player.inventory.consumables.len() < 10 {
+                                self.player.inventory.consumables.push(cons.clone());
+                                log = Some(format!("Picked up {}.", cons.name));
+                            } else {
+                                log = Some("Consumable slots full. Dropped item.".to_string());
+                            }
+                        } else {
+                            log = Some("Chest was empty.".to_string());
+                        }
+                    }
+                    'B' => {
+                        if let Some(cons) = item {
+                            let before = self.player.hp;
+                            self.player.hp = (self.player.hp + cons.heal).min(self.player.max_hp);
+                            let healed = self.player.hp - before;
+                            log = Some(format!(
+                                "Used {} ({}).",
+                                cons.name,
+                                Self::fmt_hp_delta(healed)
+                            ));
+                        } else {
+                            log = Some("Chest was empty.".to_string());
+                        }
+                    }
+                    'C' => {
+                        log = Some("You left the chest behind.".to_string());
+                    }
+                    _ => return,
+                }
+
+                if let Some(m) = log {
+                    self.push_log(m);
+                }
+
+                self.dialogue = None;
+                self.state = GameState::Playing;
             }
 
             None => {}
@@ -519,117 +877,124 @@ impl World {
 
     pub fn apply_action(&mut self, action: Action) -> bool {
         match self.state {
-            GameState::Title => {
-                match action {
-                    Action::Confirm => self.state = GameState::Intro,
-                    Action::Quit => return false,
-                    _ => {}
+            GameState::Title => match action {
+                Action::Confirm => self.state = GameState::Intro,
+                Action::Quit => return false,
+                _ => {}
+            },
+
+            GameState::Intro => match action {
+                Action::Confirm => self.state = GameState::Playing,
+                Action::Quit => return false,
+                _ => {}
+            },
+
+            GameState::Dialogue => match action {
+                Action::Confirm => self.dialogue_continue(),
+                Action::Choice(c) => self.dialogue_choice(c),
+                Action::Quit => return false,
+                _ => {}
+            },
+
+            GameState::Playing => match action {
+                Action::ToggleStats => self.toggle_stats(),
+
+                Action::ToggleInventory => self.toggle_inventory(),
+
+                Action::ToggleInvTab => {
+                    if self.inventory_open {
+                        self.toggle_inventory_tab();
+                    }
                 }
-                true
-            }
 
-            GameState::Intro => {
-                match action {
-                    Action::Confirm => self.state = GameState::Playing,
-                    Action::Quit => return false,
-                    _ => {}
+                Action::InventoryUp => {
+                    if self.inventory_open {
+                        self.player.inventory.move_cursor(-1);
+                    }
                 }
-                true
-            }
 
-            GameState::Dialogue => {
-                match action {
-                    Action::Confirm => self.dialogue_continue(),
-                    Action::Choice(c) => self.dialogue_choice(c),
-                    Action::Quit => return false,
-                    _ => {}
+                Action::InventoryDown => {
+                    if self.inventory_open {
+                        self.player.inventory.move_cursor(1);
+                    }
                 }
-                true
-            }
 
-            GameState::Playing => {
-                match action {
-                    Action::ToggleStats => {
-                        self.toggle_stats();
-                        true
+                Action::UseConsumable => {
+                    if self.inventory_open {
+                        self.use_or_unequip_or_equip();
                     }
+                }
 
-                    Action::ToggleInventory => {
-                        self.toggle_inventory();
-                        true
-                    }
+                Action::Interact => {
+                    if let Some(npc) = self.npc_near_player().cloned() {
+                        self.start_dialogue_for(&npc);
 
-                    Action::ToggleInvTab => {
-                        if self.inventory_open {
-                            self.toggle_inventory_tab();
+                        if self.noor_done && npc.id == NpcId::Lamp && !self.lamp_done {
+                            let missing_sword = self.player.inventory.sword.is_none();
+                            let missing_shield = self.player.inventory.shield.is_none();
+
+                            if missing_sword {
+                                self.player.equip_sword(Equipment {
+                                    name: "Basic Sword".to_string(),
+                                    slot: Slot::Sword,
+                                    atk_bonus: 3,
+                                    def_bonus: 0,
+                                    speed_bonus: 3,
+                                });
+                                self.lamp_done = true;
+                            } else if missing_shield {
+                                self.player.equip_shield(Equipment {
+                                    name: "Basic Shield".to_string(),
+                                    slot: Slot::Shield,
+                                    atk_bonus: 0,
+                                    def_bonus: 3,
+                                    speed_bonus: -2,
+                                });
+                                self.lamp_done = true;
+                            }
                         }
-                        true
-                    }
-
-                    Action::InventoryUp => {
-                        if self.inventory_open {
-                            self.player.inventory.move_cursor(-1);
-                        }
-                        true
-                    }
-
-                    Action::InventoryDown => {
-                        if self.inventory_open {
-                            self.player.inventory.move_cursor(1);
-                        }
-                        true
-                    }
-
-                    Action::UseConsumable => {
-                        if self.inventory_open {
-                            self.use_or_unequip_or_equip();
-                        }
-                        true
-                    }
-
-                    Action::Interact => {
-                        if let Some(npc) = self.npc_near_player().cloned() {
-                            self.start_dialogue_for(&npc);
-                        } else {
+                    } else {
+                        self.open_chest_if_on_one();
+                        if self.state != GameState::Dialogue {
                             self.push_log("No one nearby to talk to.".to_string());
                         }
-                        true
                     }
-
-                    Action::Move(dx, dy) => {
-                        if self.inventory_open || self.stats_open {
-                            return true;
-                        }
-
-                        let nx = self.player.x + dx;
-                        let ny = self.player.y + dy;
-                        if self.npc_at(self.current, nx, ny).is_some() {
-                            return true;
-                        }
-
-                        let old = (self.player.x, self.player.y);
-                        let map_snapshot = self.current_map().clone();
-                        self.player.try_move(dx, dy, &map_snapshot);
-
-                        let newp = (self.player.x, self.player.y);
-                        if old != newp {
-                            self.push_log(format!("Player moved to ({}, {})", newp.0, newp.1));
-                        }
-
-                        let tile = self.current_map().get(newp.0 as usize, newp.1 as usize);
-                        if tile == Tile::Door {
-                            self.toggle_room();
-                        }
-
-                        true
-                    }
-
-                    Action::Quit => false,
-                    Action::None => true,
-                    Action::Confirm => true,
-                    Action::Choice(_) => true,
                 }
-            }
+
+                Action::Move(dx, dy) => {
+                    if self.inventory_open || self.stats_open {
+                        return true;
+                    }
+
+                    let nx = self.player.x + dx;
+                    let ny = self.player.y + dy;
+                    if self.npc_at(self.current, nx, ny).is_some() {
+                        return true;
+                    }
+
+                    let old = (self.player.x, self.player.y);
+                    let map_snapshot = self.current_map().clone();
+                    self.player.try_move(dx, dy, &map_snapshot);
+
+                    let newp = (self.player.x, self.player.y);
+                    if old != newp {
+                        self.push_log(format!("Player moved to ({}, {})", newp.0, newp.1));
+                    }
+
+                    let tile = self.current_map().get(newp.0 as usize, newp.1 as usize);
+                    if tile == Tile::Door {
+                        self.toggle_room();
+                    } else if tile == Tile::Chest {
+                        self.open_chest_if_on_one();
+                    }
+                }
+
+                Action::Quit => return false,
+
+                Action::None | Action::Confirm | Action::Choice(_) => {}
+            },
         }
+
+        true
     }
 }
