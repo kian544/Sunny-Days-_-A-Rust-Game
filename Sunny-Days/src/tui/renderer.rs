@@ -360,14 +360,23 @@ fn draw_sidebar(f: &mut Frame, area: Rect, world: &World) {
             text.push(Line::from(format!("{} <none>", marker)));
         } else {
             for (i, c) in inv.consumables.iter().enumerate() {
-                let marker = if inv.tab == InvTab::Consumables
-                    && matches!(inv.selection(), InvSelection::Consumable(idx) if idx == i)
-                {
-                    ">"
+                let selected = inv.tab == InvTab::Consumables
+                    && matches!(inv.selection(), InvSelection::Consumable(idx) if idx == i);
+
+                let marker = if selected { ">" } else { " " };
+
+                if selected {
+                    text.push(Line::from(format!(
+                        "{} {} ({} HP, {} ATK, {} DEF) [Space to use]",
+                        marker,
+                        c.name,
+                        fmt_bonus(c.heal),
+                        fmt_bonus(c.atk_bonus),
+                        fmt_bonus(c.def_bonus),
+                    )));
                 } else {
-                    " "
-                };
-                text.push(Line::from(format!("{} {}", marker, c.name)));
+                    text.push(Line::from(format!("{} {}", marker, c.name)));
+                }
             }
         }
 
