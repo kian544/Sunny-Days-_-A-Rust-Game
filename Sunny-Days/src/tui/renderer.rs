@@ -1,4 +1,5 @@
-use crate::engine::world::{World, GameState};
+use crate::engine::world::{World, GameState, NpcId};
+use crate::engine::entity::{InvTab, InvSelection};
 use crate::map::tile::Tile;
 
 use ratatui::{
@@ -13,12 +14,9 @@ const ZOOM_W: i32 = 35;
 const ZOOM_H: i32 = 20;
 
 fn compute_viewport_origin(
-    px: i32,
-    py: i32,
-    map_w: i32,
-    map_h: i32,
-    view_w: i32,
-    view_h: i32,
+    px: i32, py: i32,
+    map_w: i32, map_h: i32,
+    view_w: i32, view_h: i32,
 ) -> (i32, i32) {
     let mut x0 = px - view_w / 2;
     let mut y0 = py - view_h / 2;
@@ -51,7 +49,7 @@ pub fn render(f: &mut Frame, world: &World) {
     match world.state {
         GameState::Title => draw_title(f, size),
         GameState::Intro => draw_intro_static(f, size, world),
-        GameState::Playing => draw_playing(f, size, world),
+        GameState::Playing | GameState::Dialogue => draw_playing(f, size, world),
     }
 }
 
@@ -138,7 +136,13 @@ fn draw_playing(f: &mut Frame, size: Rect, world: &World) {
         draw_sidebar(f, horizontal[1], world);
     }
 
-    draw_logs(f, bottom, world);
+    if world.dialogue.is_some() {
+        draw_dialogue(f, bottom, world);
+    } else if world.stats_open {
+        draw_stats(f, bottom, world);
+    } else {
+        draw_logs(f, bottom, world);
+    }
 }
 
 fn draw_map(f: &mut Frame, area: Rect, world: &World) {
@@ -183,6 +187,18 @@ fn draw_map(f: &mut Frame, area: Rect, world: &World) {
                 continue;
             }
 
+            if let Some(npc) = world.npc_at(world.current, wx, wy) {
+                let style = match npc.id {
+                    NpcId::MayorSol => Style::default().fg(Color::Cyan),
+                    NpcId::Noor => Style::default().fg(Color::Magenta),
+                };
+                spans.push(Span::styled(
+                    npc.symbol.to_string(),
+                    style.add_modifier(Modifier::BOLD),
+                ));
+                continue;
+            }
+
             if wx < 0 || wy < 0 || wx >= map_w || wy >= map_h {
                 spans.push(Span::raw(" "));
                 continue;
@@ -208,10 +224,25 @@ fn draw_map(f: &mut Frame, area: Rect, world: &World) {
     f.render_widget(map_widget, area);
 }
 
+fn tab_label(tab: InvTab, active: InvTab, title: &str) -> Span<'static> {
+    if tab == active {
+        Span::styled(
+            format!("[{}]", title),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        )
+    } else {
+        Span::styled(
+            format!(" {} ", title),
+            Style::default().fg(Color::DarkGray)
+        )
+    }
+}
+
 fn draw_sidebar(f: &mut Frame, area: Rect, world: &World) {
     f.render_widget(Clear, area);
 
     let p = &world.player;
+    let inv = &p.inventory;
     let room_label = if world.current == 0 { "Room 1" } else { "Room 2" };
 
     let mut text: Vec<Line> = vec![
@@ -219,41 +250,109 @@ fn draw_sidebar(f: &mut Frame, area: Rect, world: &World) {
             Span::styled("HP: ", Style::default().fg(Color::White)),
             Span::styled(format!("{}/{}", p.hp, p.max_hp), Style::default().fg(Color::Green)),
         ]),
+        Line::from(format!("ATK: {}", p.attack())),
+        Line::from(format!("DEF: {}", p.defense())),
+        Line::from(format!("SPD: {}", p.speed())),
         Line::from(format!("Pos: ({}, {})", p.x, p.y)),
         Line::from(format!("Room: {}", room_label)),
-        Line::from(format!("Seed: {}", world.seed)),
         Line::from(""),
     ];
 
     if world.inventory_open {
         text.push(Line::from(Span::styled("Inventory", Style::default().fg(Color::Cyan))));
-        let sword_name = p.inventory.sword.as_ref().map(|e| e.name.as_str()).unwrap_or("<empty>");
-        let shield_name = p.inventory.shield.as_ref().map(|e| e.name.as_str()).unwrap_or("<empty>");
-        text.push(Line::from(format!("Sword : {}", sword_name)));
-        text.push(Line::from(format!("Shield: {}", shield_name)));
+
+        text.push(Line::from(vec![
+            tab_label(InvTab::Weapons, inv.tab, "Weapons"),
+            Span::raw(" "),
+            tab_label(InvTab::Consumables, inv.tab, "Consumables"),
+            Span::raw(" "),
+            tab_label(InvTab::Backpack, inv.tab, "Backpack"),
+        ]));
         text.push(Line::from(""));
 
-        text.push(Line::from("Consumables (Space to use)"));
-        if p.inventory.consumables.is_empty() {
-            text.push(Line::from("  <none>"));
+        text.push(Line::from(Span::styled("Weapons", Style::default().fg(Color::White))));
+        let sword_marker = if inv.tab == InvTab::Weapons && matches!(inv.selection(), InvSelection::SwordSlot) { ">" } else { " " };
+        let sword_line = match &inv.sword {
+            Some(sw) => {
+                if inv.tab == InvTab::Weapons && matches!(inv.selection(), InvSelection::SwordSlot) {
+                    format!(
+                        "{} Sword : {} (+{} ATK, +{} DEF, +{} SPD) [Space to unequip]",
+                        sword_marker, sw.name, sw.atk_bonus, sw.def_bonus, sw.speed_bonus
+                    )
+                } else {
+                    format!("{} Sword : {}", sword_marker, sw.name)
+                }
+            }
+            None => format!("{} Sword : <empty>", sword_marker),
+        };
+        text.push(Line::from(sword_line));
+
+        let shield_marker = if inv.tab == InvTab::Weapons && matches!(inv.selection(), InvSelection::ShieldSlot) { ">" } else { " " };
+        let shield_line = match &inv.shield {
+            Some(sh) => {
+                if inv.tab == InvTab::Weapons && matches!(inv.selection(), InvSelection::ShieldSlot) {
+                    format!(
+                        "{} Shield: {} (+{} ATK, +{} DEF, +{} SPD) [Space to unequip]",
+                        shield_marker, sh.name, sh.atk_bonus, sh.def_bonus, sh.speed_bonus
+                    )
+                } else {
+                    format!("{} Shield: {}", shield_marker, sh.name)
+                }
+            }
+            None => format!("{} Shield: <empty>", shield_marker),
+        };
+        text.push(Line::from(shield_line));
+
+        text.push(Line::from(""));
+
+        text.push(Line::from(Span::styled("Consumables (Space to use)", Style::default().fg(Color::White))));
+        if inv.consumables.is_empty() {
+            let marker = if inv.tab == InvTab::Consumables { ">" } else { " " };
+            text.push(Line::from(format!("{} <none>", marker)));
         } else {
-            for (i, c) in p.inventory.consumables.iter().enumerate() {
-                let marker = if i == p.inventory.selected { ">" } else { " " };
+            for (i, c) in inv.consumables.iter().enumerate() {
+                // FIXED HERE: idx is usize already
+                let marker = if inv.tab == InvTab::Consumables
+                    && matches!(inv.selection(), InvSelection::Consumable(idx) if idx == i) {
+                    ">"
+                } else { " " };
                 text.push(Line::from(format!("{} {}", marker, c.name)));
             }
         }
-
-        let empty_slots = 10usize.saturating_sub(p.inventory.consumables.len());
+        let empty_slots = 10usize.saturating_sub(inv.consumables.len());
         text.push(Line::from(format!("Empty slots: {}", empty_slots)));
+
+        text.push(Line::from(""));
+
+        text.push(Line::from(Span::styled("Backpack (unequipped)", Style::default().fg(Color::White))));
+        if inv.backpack.is_empty() {
+            let marker = if inv.tab == InvTab::Backpack { ">" } else { " " };
+            text.push(Line::from(format!("{} <empty>", marker)));
+        } else {
+            for (i, b) in inv.backpack.iter().enumerate() {
+                // FIXED HERE: idx is usize already
+                let marker = if inv.tab == InvTab::Backpack
+                    && matches!(inv.selection(), InvSelection::BackpackItem(idx) if idx == i) {
+                    ">"
+                } else { " " };
+                text.push(Line::from(format!("{} {}", marker, b.name)));
+            }
+        }
+
         text.push(Line::from(""));
         text.push(Line::from("Up/Down: select"));
-        text.push(Line::from("Space: use"));
+        text.push(Line::from("T: change tab"));
+        text.push(Line::from("Space: use/unequip"));
         text.push(Line::from("I or Esc: close"));
+        text.push(Line::from("Q: stats"));
     } else {
         text.push(Line::from(Span::styled("Controls", Style::default().fg(Color::Cyan))));
         text.push(Line::from("WASD / Arrows: Move"));
+        text.push(Line::from("E: Talk"));
         text.push(Line::from("I: Inventory"));
-        text.push(Line::from("Q: Quit"));
+        text.push(Line::from("T: Inventory Tab"));
+        text.push(Line::from("Q: Stats"));
+        text.push(Line::from("Ctrl+C: Quit"));
         text.push(Line::from("Step on + to switch rooms"));
     }
 
@@ -277,4 +376,63 @@ fn draw_logs(f: &mut Frame, area: Rect, world: &World) {
         .wrap(Wrap { trim: true });
 
     f.render_widget(logs, area);
+}
+
+fn draw_stats(f: &mut Frame, area: Rect, world: &World) {
+    let p = &world.player;
+    let inv = &p.inventory;
+
+    let sword = inv.sword.as_ref().map(|s| s.name.as_str()).unwrap_or("<empty>");
+    let shield = inv.shield.as_ref().map(|s| s.name.as_str()).unwrap_or("<empty>");
+
+    let lines = vec![
+        Line::from(Span::styled("Current Stats", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        Line::from(format!("HP  : {}/{}", p.hp, p.max_hp)),
+        Line::from(format!("ATK : {}", p.attack())),
+        Line::from(format!("DEF : {}", p.defense())),
+        Line::from(format!("SPD : {}", p.speed())),
+        Line::from(""),
+        Line::from(format!("Sword : {}", sword)),
+        Line::from(format!("Shield: {}", shield)),
+        Line::from(""),
+        Line::from(Span::styled("Press Q or Esc to close.", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))),
+    ];
+
+    let stats = Paragraph::new(lines)
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).title("Stats"))
+        .wrap(Wrap { trim: true });
+
+    f.render_widget(stats, area);
+}
+
+fn draw_dialogue(f: &mut Frame, area: Rect, world: &World) {
+    let d = world.dialogue.as_ref().unwrap();
+    let page_text = &d.pages[d.page_index];
+
+    let mut lines: Vec<Line> = Vec::new();
+    for raw_line in page_text.lines() {
+        lines.push(Line::from(raw_line.to_string()));
+    }
+
+    let footer = if d.page_index + 1 < d.pages.len() {
+        "Press SPACE to continue..."
+    } else if d.awaiting.is_some() {
+        "Enter your choice (letter)..."
+    } else {
+        "Press SPACE to close."
+    };
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        footer,
+        Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+    )));
+
+    let dialog = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(d.title.clone()))
+        .wrap(Wrap { trim: true });
+
+    f.render_widget(dialog, area);
 }

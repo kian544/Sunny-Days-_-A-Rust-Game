@@ -3,66 +3,163 @@ use crate::map::Map;
 #[derive(Debug, Clone)]
 pub struct Equipment {
     pub name: String,
-    pub atk: i32,
-    pub def: i32,
+    pub atk_bonus: i32,
+    pub def_bonus: i32,
+    pub speed_bonus: i32,
 }
 
 #[derive(Debug, Clone)]
 pub struct Consumable {
     pub name: String,
     pub heal: i32,
+    pub atk_bonus: i32,
+    pub def_bonus: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvTab {
+    Weapons,
+    Consumables,
+    Backpack,
 }
 
 #[derive(Debug, Clone)]
 pub struct Inventory {
     pub sword: Option<Equipment>,
     pub shield: Option<Equipment>,
-    pub consumables: Vec<Consumable>,
-    pub selected: usize,
+
+    pub consumables: Vec<Consumable>, // up to 10 later
+    pub backpack: Vec<Equipment>,     // unequipped gear
+
+    // Tab + per-tab cursors
+    pub tab: InvTab,
+    pub weapon_cursor: usize,      // 0 sword, 1 shield
+    pub consumable_cursor: usize,  // 0..len-1
+    pub backpack_cursor: usize,    // 0..len-1
+}
+
+#[derive(Debug, Clone)]
+pub enum InvSelection {
+    SwordSlot,
+    ShieldSlot,
+    Consumable(usize),
+    BackpackItem(usize),
+    None,
 }
 
 impl Inventory {
-    /// Start with absolutely nothing equipped or carried.
     pub fn default_loadout() -> Self {
         Self {
             sword: None,
             shield: None,
             consumables: Vec::new(),
-            selected: 0,
+            backpack: Vec::new(),
+            tab: InvTab::Weapons,
+            weapon_cursor: 0,
+            consumable_cursor: 0,
+            backpack_cursor: 0,
         }
     }
 
-    pub fn move_selection(&mut self, delta: i32) {
-        let len = self.consumables.len();
-        if len == 0 {
-            self.selected = 0;
-            return;
+    pub fn toggle_tab(&mut self) {
+        self.tab = match self.tab {
+            InvTab::Weapons => InvTab::Consumables,
+            InvTab::Consumables => InvTab::Backpack,
+            InvTab::Backpack => InvTab::Weapons,
+        };
+
+        // Clamp cursors to valid ranges
+        if self.weapon_cursor > 1 {
+            self.weapon_cursor = 1;
         }
-        let mut idx = self.selected as i32 + delta;
-        if idx < 0 {
-            idx = len as i32 - 1;
-        } else if idx >= len as i32 {
-            idx = 0;
+        if !self.consumables.is_empty() && self.consumable_cursor >= self.consumables.len() {
+            self.consumable_cursor = self.consumables.len() - 1;
         }
-        self.selected = idx as usize;
+        if !self.backpack.is_empty() && self.backpack_cursor >= self.backpack.len() {
+            self.backpack_cursor = self.backpack.len() - 1;
+        }
     }
 
-    pub fn take_selected(&mut self) -> Option<Consumable> {
+    pub fn move_cursor(&mut self, delta: i32) {
+        match self.tab {
+            InvTab::Weapons => {
+                let len = 2;
+                let mut idx = self.weapon_cursor as i32 + delta;
+                if idx < 0 {
+                    idx = len as i32 - 1;
+                } else if idx >= len as i32 {
+                    idx = 0;
+                }
+                self.weapon_cursor = idx as usize;
+            }
+
+            InvTab::Consumables => {
+                let len = self.consumables.len();
+                if len == 0 {
+                    self.consumable_cursor = 0;
+                    return;
+                }
+                let mut idx = self.consumable_cursor as i32 + delta;
+                if idx < 0 {
+                    idx = len as i32 - 1;
+                } else if idx >= len as i32 {
+                    idx = 0;
+                }
+                self.consumable_cursor = idx as usize;
+            }
+
+            InvTab::Backpack => {
+                let len = self.backpack.len();
+                if len == 0 {
+                    self.backpack_cursor = 0;
+                    return;
+                }
+                let mut idx = self.backpack_cursor as i32 + delta;
+                if idx < 0 {
+                    idx = len as i32 - 1;
+                } else if idx >= len as i32 {
+                    idx = 0;
+                }
+                self.backpack_cursor = idx as usize;
+            }
+        }
+    }
+
+    pub fn selection(&self) -> InvSelection {
+        match self.tab {
+            InvTab::Weapons => {
+                if self.weapon_cursor == 0 {
+                    InvSelection::SwordSlot
+                } else {
+                    InvSelection::ShieldSlot
+                }
+            }
+            InvTab::Consumables => {
+                if self.consumables.is_empty() {
+                    InvSelection::None
+                } else {
+                    InvSelection::Consumable(self.consumable_cursor)
+                }
+            }
+            InvTab::Backpack => {
+                if self.backpack.is_empty() {
+                    InvSelection::None
+                } else {
+                    InvSelection::BackpackItem(self.backpack_cursor)
+                }
+            }
+        }
+    }
+
+    pub fn take_selected_consumable(&mut self) -> Option<Consumable> {
+        if self.tab != InvTab::Consumables {
+            return None;
+        }
         if self.consumables.is_empty() {
             return None;
         }
-        if self.selected >= self.consumables.len() {
-            self.selected = 0;
-        }
-        let item = self.consumables.remove(self.selected);
-        if self.selected >= self.consumables.len() && !self.consumables.is_empty() {
-            self.selected = self.consumables.len() - 1;
-        }
-        Some(item)
-    }
-
-    pub fn selected_consumable(&self) -> Option<&Consumable> {
-        self.consumables.get(self.selected)
+        let idx = self.consumable_cursor.min(self.consumables.len() - 1);
+        Some(self.consumables.remove(idx))
     }
 }
 
@@ -70,8 +167,14 @@ impl Inventory {
 pub struct Player {
     pub x: i32,
     pub y: i32,
+
     pub hp: i32,
     pub max_hp: i32,
+
+    pub base_attack: i32,
+    pub base_defense: i32,
+    pub base_speed: i32,
+
     pub inventory: Inventory,
 }
 
@@ -83,8 +186,52 @@ impl Player {
             y,
             hp: max_hp,
             max_hp,
+            base_attack: 10,
+            base_defense: 8,
+            base_speed: 5,
             inventory: Inventory::default_loadout(),
         }
+    }
+
+    pub fn attack(&self) -> i32 {
+        let mut v = self.base_attack;
+        if let Some(sw) = &self.inventory.sword {
+            v += sw.atk_bonus;
+        }
+        if let Some(sh) = &self.inventory.shield {
+            v += sh.atk_bonus;
+        }
+        v
+    }
+
+    pub fn defense(&self) -> i32 {
+        let mut v = self.base_defense;
+        if let Some(sw) = &self.inventory.sword {
+            v += sw.def_bonus;
+        }
+        if let Some(sh) = &self.inventory.shield {
+            v += sh.def_bonus;
+        }
+        v
+    }
+
+    pub fn speed(&self) -> i32 {
+        let mut v = self.base_speed;
+        if let Some(sw) = &self.inventory.sword {
+            v += sw.speed_bonus;
+        }
+        if let Some(sh) = &self.inventory.shield {
+            v += sh.speed_bonus;
+        }
+        v
+    }
+
+    pub fn equip_sword(&mut self, eq: Equipment) {
+        self.inventory.sword = Some(eq);
+    }
+
+    pub fn equip_shield(&mut self, eq: Equipment) {
+        self.inventory.shield = Some(eq);
     }
 
     pub fn try_move(&mut self, dx: i32, dy: i32, map: &Map) {

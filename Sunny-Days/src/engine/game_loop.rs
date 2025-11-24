@@ -4,7 +4,7 @@ use crate::engine::world::{World, GameState};
 use crate::tui::{input::is_press, renderer::render};
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -19,7 +19,6 @@ use std::{
 const MOVE_COOLDOWN_MS: u64 = 90;
 
 pub fn run() -> std::io::Result<()> {
-    // ---- start background music right away ----
     let _music = match Music::start_loop("assets/Background1.mp3") {
         Ok(m) => Some(m),
         Err(e) => {
@@ -28,7 +27,6 @@ pub fn run() -> std::io::Result<()> {
         }
     };
 
-    // ---- terminal init ----
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -62,29 +60,47 @@ pub fn run() -> std::io::Result<()> {
                         continue;
                     }
 
-                    let mut action = match world.state {
-                        GameState::Title | GameState::Intro => {
-                            match key.code {
-                                KeyCode::Char(' ') | KeyCode::Enter => Action::Confirm,
-                                KeyCode::Char('q') | KeyCode::Char('Q') => Action::Quit,
-                                _ => Action::None,
-                            }
+                    // Quit with Ctrl+C anywhere
+                    if key.modifiers.contains(KeyModifiers::CONTROL) {
+                        if let KeyCode::Char('c') | KeyCode::Char('q') = key.code {
+                            running = world.apply_action(Action::Quit);
+                            continue;
                         }
+                    }
+
+                    let mut action = match world.state {
+                        GameState::Title | GameState::Intro => match key.code {
+                            KeyCode::Char(' ') | KeyCode::Enter => Action::Confirm,
+                            _ => Action::None,
+                        },
+
+                        GameState::Dialogue => match key.code {
+                            KeyCode::Char(' ') | KeyCode::Enter => Action::Confirm,
+                            KeyCode::Char(c) if c.is_ascii_alphabetic() => Action::Choice(c),
+                            _ => Action::None,
+                        },
 
                         GameState::Playing => {
-                            if world.inventory_open {
+                            if world.stats_open {
                                 match key.code {
+                                    KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => Action::ToggleStats,
+                                    _ => Action::None,
+                                }
+                            } else if world.inventory_open {
+                                match key.code {
+                                    KeyCode::Char('t') | KeyCode::Char('T') => Action::ToggleInvTab, // NEW
+                                    KeyCode::Char('q') | KeyCode::Char('Q') => Action::ToggleStats,
                                     KeyCode::Char('i') | KeyCode::Char('I') | KeyCode::Esc => Action::ToggleInventory,
                                     KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('W') => Action::InventoryUp,
                                     KeyCode::Down | KeyCode::Char('s') | KeyCode::Char('S') => Action::InventoryDown,
                                     KeyCode::Char(' ') => Action::UseConsumable,
-                                    KeyCode::Char('q') | KeyCode::Char('Q') => Action::Quit,
                                     _ => Action::None,
                                 }
                             } else {
                                 match key.code {
-                                    KeyCode::Char('q') | KeyCode::Char('Q') => Action::Quit,
+                                    KeyCode::Char('q') | KeyCode::Char('Q') => Action::ToggleStats,
                                     KeyCode::Char('i') | KeyCode::Char('I') => Action::ToggleInventory,
+                                    KeyCode::Char('e') | KeyCode::Char('E') => Action::Interact,
 
                                     KeyCode::Up | KeyCode::Char('w') | KeyCode::Char('W') => Action::Move(0, -1),
                                     KeyCode::Down | KeyCode::Char('s') | KeyCode::Char('S') => Action::Move(0, 1),
@@ -123,6 +139,5 @@ pub fn run() -> std::io::Result<()> {
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
-
     Ok(())
 }
