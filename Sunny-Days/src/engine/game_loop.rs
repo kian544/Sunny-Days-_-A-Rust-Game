@@ -49,7 +49,6 @@ pub fn run() -> std::io::Result<()> {
         if world.player.hp <= 0 {
             terminal.clear()?;
             println!("You died. Press Ctrl+C to quit.");
-            // Break loop to exit properly
             break;
         }
 
@@ -81,12 +80,15 @@ pub fn run() -> std::io::Result<()> {
 
                     let mut action = match world.state {
                         GameState::Title | GameState::Intro => match key.code {
-                            KeyCode::Char(' ') | KeyCode::Enter => Action::Confirm,
+                            // Allow Space, Enter, e, or E to advance title/intro
+                            KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Char('e') | KeyCode::Char('E') => Action::Confirm,
                             _ => Action::None,
                         },
 
                         GameState::Dialogue => match key.code {
-                            KeyCode::Char(' ') | KeyCode::Enter => Action::Confirm,
+                            // Allow Space, Enter, e, or E to advance dialogue pages
+                            // This is placed BEFORE the alphabetic check so 'e' acts as Confirm, not Choice('e')
+                            KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Char('e') | KeyCode::Char('E') => Action::Confirm,
                             KeyCode::Char(c) if c.is_ascii_alphabetic() => Action::Choice(c),
                             _ => Action::None,
                         },
