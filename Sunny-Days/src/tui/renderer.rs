@@ -268,7 +268,7 @@ fn draw_map(f: &mut Frame, area: Rect, world: &World) {
                 let (style, bold) = match npc.id {
                     NpcId::MayorSol => (Style::default().fg(Color::Cyan), true),
                     NpcId::Noor => (Style::default().fg(Color::Magenta), true),
-                    NpcId::Lamp => (Style::default().fg(Color::Yellow), true),
+                    NpcId::Lamp | NpcId::Dorosht => (Style::default().fg(Color::Yellow), true),
                     NpcId::Random1 | NpcId::Random2 | NpcId::Random3 => {
                         (Style::default().fg(Color::Yellow), true)
                     }

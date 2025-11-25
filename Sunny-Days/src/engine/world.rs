@@ -40,6 +40,7 @@ pub enum NpcId {
     MayorSol,
     Noor,
     Lamp,
+    Dorosht, // NEW: Side quest NPC
     Random1,
     Random2,
     Random3,
@@ -65,6 +66,7 @@ pub struct Npc {
 #[derive(Debug, Clone)]
 pub enum AwaitingChoice {
     YesNoMayor,
+    YesNoDorosht, // NEW: Dorosht choice
     ABNoorWeapon,
     Chest {
         room: usize,
@@ -118,6 +120,10 @@ pub struct World {
     noor_done: bool,
     lamp_done: bool,
     
+    // Dorosht Quest Flags
+    dorosht_accepted: bool,
+    dorosht_completed: bool,
+    
     shab_defeated: bool,
     krad_defeated: bool,
     mah_defeated: bool,
@@ -168,6 +174,8 @@ impl World {
             mayor_done: false,
             noor_done: false,
             lamp_done: false,
+            dorosht_accepted: false,
+            dorosht_completed: false,
             shab_defeated: false,
             krad_defeated: false,
             mah_defeated: false,
@@ -223,7 +231,12 @@ impl World {
         let mut taken_r0: Vec<(i32, i32)> = vec![(spawn0.0, spawn0.1), (mx, my), self.levels[0].door];
         for ch in &self.levels[0].chests { taken_r0.push((ch.x, ch.y)); }
 
-        for (id, sym, name) in [(NpcId::Noor, 'N', "Noor"), (NpcId::Lamp, 'L', "Lamp")] {
+        // Noor, Lamp, Dorosht
+        for (id, sym, name) in [
+            (NpcId::Noor, 'N', "Noor"),
+            (NpcId::Lamp, 'L', "Lamp"),
+            (NpcId::Dorosht, 'D', "Dorosht"),
+        ] {
             let (x, y) = self.random_floor_spaced(0, &taken_r0, Self::NPC_MIN_SEP);
             taken_r0.push((x, y));
             self.npcs.push(Npc { id, name: name.to_string(), room: 0, x, y, symbol: sym });
@@ -299,7 +312,7 @@ impl World {
         let spawn = (sx as i32, sy as i32);
         let door = Self::place_random_door(&mut map, seed ^ 0xD00D, spawn);
         
-        // Random chests for consumables (in Room 1 and Room 2 now)
+        // Random chests
         let chests = Self::scatter_chests(&mut map, seed ^ 0xC1E57, spawn, door);
         
         (Level { map, door, chests }, spawn)
@@ -414,7 +427,7 @@ impl World {
             InvSelection::SwordSlot => {
                 let eq_opt = self.player.inventory.sword.take();
                 if let Some(eq) = eq_opt {
-                    self.player.max_hp -= eq.hp_bonus; // Remove HP bonus
+                    self.player.max_hp -= eq.hp_bonus; 
                     if self.player.hp > self.player.max_hp { self.player.hp = self.player.max_hp; }
                     self.player.inventory.backpack.push(eq.clone());
                     log_msg = Some(format!("Unequipped {}.", eq.name));
@@ -423,7 +436,7 @@ impl World {
             InvSelection::ShieldSlot => {
                 let eq_opt = self.player.inventory.shield.take();
                 if let Some(eq) = eq_opt {
-                    self.player.max_hp -= eq.hp_bonus; // Remove HP bonus
+                    self.player.max_hp -= eq.hp_bonus;
                     if self.player.hp > self.player.max_hp { self.player.hp = self.player.max_hp; }
                     self.player.inventory.backpack.push(eq.clone());
                     log_msg = Some(format!("Unequipped {}.", eq.name));
@@ -448,13 +461,11 @@ impl World {
             InvSelection::BackpackItem(i) => {
                 let eq_opt = if i < self.player.inventory.backpack.len() { Some(self.player.inventory.backpack.remove(i)) } else { None };
                 if let Some(eq) = eq_opt {
-                    // Add new HP bonus
                     self.player.max_hp += eq.hp_bonus;
-                    
                     match eq.slot {
                         Slot::Sword => {
                             if let Some(old) = self.player.inventory.sword.take() { 
-                                self.player.max_hp -= old.hp_bonus; // Remove old bonus
+                                self.player.max_hp -= old.hp_bonus;
                                 self.player.inventory.backpack.push(old); 
                             }
                             self.player.inventory.sword = Some(eq.clone());
@@ -462,16 +473,14 @@ impl World {
                         }
                         Slot::Shield => {
                             if let Some(old) = self.player.inventory.shield.take() { 
-                                self.player.max_hp -= old.hp_bonus; // Remove old bonus
+                                self.player.max_hp -= old.hp_bonus;
                                 self.player.inventory.backpack.push(old); 
                             }
                             self.player.inventory.shield = Some(eq.clone());
                             log_msg = Some(format!("Equipped shield: {}.", eq.name));
                         }
                     }
-                    // Clamp HP if max reduced
                     if self.player.hp > self.player.max_hp { self.player.hp = self.player.max_hp; }
-                    
                     let inv = &mut self.player.inventory;
                     if inv.backpack.is_empty() { inv.backpack_cursor = 0; } else if inv.backpack_cursor >= inv.backpack.len() { inv.backpack_cursor = inv.backpack.len() - 1; }
                 } else { log_msg = Some("Nothing to equip.".to_string()); }
@@ -632,8 +641,6 @@ impl World {
             }
             NpcId::Mah => {
                 self.mah_defeated = true;
-                
-                // Remove boss and spawn Weeping Dagger Chest
                 let boss_pos = if let Some(pos) = self.npcs.iter().position(|n| n.id == NpcId::Mah) {
                     let npc = self.npcs.remove(pos);
                     let chest = Chest {
@@ -651,15 +658,10 @@ impl World {
                     Some((npc.x, npc.y))
                 } else { None };
 
-                // Spawn Shield of Healing Chest (Random location in Room 2, away from dagger)
                 if let Some((bx, by)) = boss_pos {
-                    // Create taken list including boss loc, door, existing chests
                     let mut taken = vec![(bx, by), self.levels[1].door];
                     for c in &self.levels[1].chests { taken.push((c.x, c.y)); }
-                    
-                    // Find spot with dist >= 10 from Dagger chest
                     let (sx, sy) = self.random_floor_spaced(1, &taken, 10);
-                    
                     let shield_chest = Chest {
                         x: sx, y: sy,
                         item: None,
@@ -695,6 +697,50 @@ impl World {
         self.state = GameState::Dialogue;
     }
 
+    fn swap_dorosht_item(&mut self) -> bool {
+        let mut found = false;
+        let mut idx_to_remove = None;
+        let mut from_backpack = false;
+
+        if let Some(ref s) = self.player.inventory.sword {
+            if s.name == "Weeping Dagger" {
+                found = true;
+            }
+        }
+        
+        if found {
+            // Unequip dagger first
+            self.player.inventory.sword = None;
+            self.player.max_hp += 100; // Remove dagger penalty
+        } else {
+            for (i, item) in self.player.inventory.backpack.iter().enumerate() {
+                if item.name == "Weeping Dagger" {
+                    idx_to_remove = Some(i);
+                    from_backpack = true;
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        if found {
+            if from_backpack {
+                if let Some(i) = idx_to_remove {
+                    self.player.inventory.backpack.remove(i);
+                }
+            }
+            
+            let axe = Equipment {
+                name: "Willow Axe".to_string(),
+                slot: Slot::Sword,
+                hp_bonus: 5, atk_bonus: 15, def_bonus: 5, speed_bonus: -2,
+            };
+            self.player.inventory.backpack.push(axe);
+            return true;
+        }
+        false
+    }
+
     fn start_dialogue_for(&mut self, npc: &Npc) {
         let session = match npc.id {
             // Existing NPCs
@@ -713,6 +759,25 @@ impl World {
                     let missing = if self.player.inventory.sword.is_none() { "Sword" } else { "Shield" };
                     DialogueSession { npc: npc.id, title: npc.name.clone(), pages: vec![format!("Hey! Did Noor send you? Yeah, they’re a bit rough around the edges. So you’re missing a {}, well take this!", missing), format!("You got the {}.", missing)], page_index: 0, awaiting: None }
                  }
+            },
+            NpcId::Dorosht => {
+                if self.dorosht_completed {
+                    DialogueSession { npc: npc.id, title: npc.name.clone(), pages: vec!["Thanks again!".to_string()], page_index: 0, awaiting: None }
+                } else if self.dorosht_accepted {
+                    // Try to swap item
+                    if self.swap_dorosht_item() {
+                        self.dorosht_completed = true;
+                        DialogueSession { npc: npc.id, title: npc.name.clone(), pages: vec![
+                            "Well is that it! My goodness, I never thought you’d come back alive, let alone with the dagger! A deal’s a deal, here is the axe!".to_string()
+                        ], page_index: 0, awaiting: None }
+                    } else {
+                        DialogueSession { npc: npc.id, title: npc.name.clone(), pages: vec!["Come back with the dagger, and she’s yours!".to_string()], page_index: 0, awaiting: None }
+                    }
+                } else {
+                    DialogueSession { npc: npc.id, title: npc.name.clone(), pages: vec![
+                        "Hey there mighty traveler, rumor is, you’re going to go into the Weeping Willow Woods… if you do, might you fetch me something?".to_string()
+                    ], page_index: 0, awaiting: Some(AwaitingChoice::YesNoDorosht) }
+                }
             },
             NpcId::Random1 => DialogueSession { npc: npc.id, title: npc.name.clone(), pages: vec!["Isn’t it bad? So gloomy, so dark, I need some vitamin D pills or something!".to_string()], page_index: 0, awaiting: None },
             NpcId::Random2 => DialogueSession { npc: npc.id, title: npc.name.clone(), pages: vec!["I actually overheard the Mayor talking to himself, I think he’s going a bit cukoo!!".to_string()], page_index: 0, awaiting: None },
@@ -782,6 +847,27 @@ impl World {
                     if let Some(d) = &mut self.dialogue {
                         d.awaiting = None;
                         d.pages = vec![if yes { "Why thank you! Now go talk to Noor to get you started.".to_string() } else { "Aren’t you rude, I’ve been nothing but kind. Fine, go to Noor to get you started I guess…".to_string() }];
+                        d.page_index = 0;
+                    }
+                }
+            }
+            Some(AwaitingChoice::YesNoDorosht) => {
+                if up == 'Y' {
+                    self.dorosht_accepted = true;
+                    if let Some(d) = &mut self.dialogue {
+                        d.awaiting = None;
+                        d.pages = vec![
+                            "Do ya really mean it?! Why thank you mighty one! What I’m looking for is…. the Weeping dagger!".to_string(),
+                            "Legend states, it is a cursed blade, forged by the most brutal of the Weeping.".to_string(),
+                            "Now don’t you worry, you won’t trade for nothing, I have here is a mighty fine weapon, the Willow Axe, made with a fine steel, along with the strong bark of the Weeping Willow Forest.".to_string(),
+                            "Come back with the dagger, and she’s yours!".to_string(),
+                        ];
+                        d.page_index = 0;
+                    }
+                } else if up == 'N' {
+                    if let Some(d) = &mut self.dialogue {
+                        d.awaiting = None;
+                        d.pages = vec!["Well, I won’t be going anywhere in case you change your mind.".to_string()];
                         d.page_index = 0;
                     }
                 }
