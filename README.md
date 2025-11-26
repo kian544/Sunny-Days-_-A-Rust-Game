@@ -12,3 +12,7 @@ cargo clean - To clean out any previous runs
 cargo run - To begin running the game
 
 Once in the game, simply click Q, or q, to quit the game, you may move around by using the WASD/Key Arrows
+
+https://youtu.be/5j8qE_WO06I?si=JBefL3HPSe7lxzlX (Youtube link to explanation and demo)
+
+DOCUMENTATION
