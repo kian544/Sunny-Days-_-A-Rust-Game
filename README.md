@@ -1,5 +1,5 @@
 
-# tapssp-project
+# Sunny Days - A Rust Game
 
 To run the game, first clone this repo to your local machine, then enter the terminal on the "Sunny Days" Folder, and use the cmd:
 cargo clean - To clean out any previous runs
